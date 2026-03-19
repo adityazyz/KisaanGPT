@@ -1,0 +1,14 @@
+{
+  "name": "agriconnect-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../farmer-app && npm install && cd ../buyer-app && npm install && cd ../supplier-app && npm install && cd ../admin-app && npm install",
+    "dev:backend":  "cd backend && npm run dev",
+    "dev:farmer":   "cd farmer-app && npm run dev",
+    "dev:buyer":    "cd buyer-app && npm run dev",
+    "dev:supplier": "cd supplier-app && npm run dev",
+    "dev:admin":    "cd admin-app && npm run dev",
+    "db:migrate":   "cd backend && npm run db:migrate"
+  }
+}
