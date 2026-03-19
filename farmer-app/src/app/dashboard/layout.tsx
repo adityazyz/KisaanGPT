@@ -19,7 +19,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { href: '/dashboard/supply',        label: t('nav_supply'),        icon: '🚜' },
     { href: '/dashboard/crop-analysis', label: t('nav_crop_ai'),       icon: '🔬', badge: t('badge_ai') },
     { href: '/dashboard/inputs',        label: t('nav_inputs'),        icon: '🧪' },
-    { href: '/dashboard/notifications', label: t('nav_notifications'), icon: '🔔' },
+    // { href: '/dashboard/notifications', label: t('nav_notifications'), icon: '🔔' },
   ];
 
   return (

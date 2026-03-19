@@ -275,7 +275,7 @@ function buildSystemPrompt(lang: 'en' | 'hi'): string {
     ? `LANGUAGE: You must ALWAYS reply in Hindi (Devanagari script हिंदी) — every single message, no exceptions. Not Gujarati, not English. ONLY Hindi. Example: "आपके दो खेत हैं — Jack1 और Farm2।"`
     : `LANGUAGE: Always reply in English only.`;
 
-  return `You are AgriConnect's AI assistant for Indian farmers.
+  return `You are KisaanGPT's AI assistant for Indian farmers.
 
 ${langRule}
 
@@ -298,13 +298,13 @@ Farmer: "Jack1 ke liye crop plan banao"
 // Final answer prompt — same language rules, no tools
 function buildFinalAnswerPrompt(lang: 'en' | 'hi'): string {
   if (lang === 'hi') {
-    return `तुम AgriConnect के हिंदी सहायक हो।
+    return `तुम KisaanGPT के हिंदी सहायक हो।
 नीचे दिए tool results के आधार पर किसान को 2-3 वाक्यों में बताओ।
 सख्त नियम: केवल हिंदी (देवनागरी लिपि में) में लिखो। गुजराती, अंग्रेजी या कोई अन्य भाषा नहीं।
 उदाहरण सही जवाब: "आपके Jack1 खेत के लिए गेहूं की फसल योजना बन गई है। बुवाई 25 मार्च को करें।"
 कोई markdown, bullets या headings नहीं।`;
   }
-  return `You are AgriConnect's English assistant.
+  return `You are KisaanGPT's English assistant.
 Based on the tool results below, tell the farmer what happened in 2-3 short sentences.
 English only. No markdown. No bullets.`;
 }

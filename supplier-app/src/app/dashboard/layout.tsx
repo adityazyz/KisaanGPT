@@ -21,7 +21,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="px-6 py-5 border-b border-stone-200 flex items-center gap-3">
           <span className="text-2xl">🧪</span>
           <div>
-            <div className="font-display font-bold text-amber-800 text-lg leading-tight">AgriConnect</div>
+            <div className="font-display font-bold text-amber-800 text-lg leading-tight">KisaanGPT</div>
             <div className="text-xs text-stone-500">Supplier Portal</div>
           </div>
         </div>
@@ -42,7 +42,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="flex-1 flex flex-col min-w-0">
         <header className="sticky top-0 z-20 bg-white/90 backdrop-blur border-b border-stone-200 px-6 py-4 flex items-center gap-4 lg:hidden">
           <button onClick={() => setOpen(true)} className="text-stone-500 text-xl">☰</button>
-          <span className="font-display font-bold text-amber-800">AgriConnect</span>
+          <span className="font-display font-bold text-amber-800">KisaanGPT</span>
         </header>
         <main className="flex-1 p-6 overflow-auto">{children}</main>
       </div>
