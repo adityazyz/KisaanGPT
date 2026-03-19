@@ -10,7 +10,6 @@ type Role = 'user' | 'assistant';
 interface Message { id: string; role: Role; text: string; action?: string; }
 interface ConvMsg  { role: string; content: string | null; }
 
-// ── TTS ───────────────────────────────────────────────────────────────────────
 function speak(text: string, lang: Lang) {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
@@ -19,20 +18,18 @@ function speak(text: string, lang: Lang) {
   if (!clean) return;
 
   const doSpeak = () => {
-    const u      = new SpeechSynthesisUtterance(clean);
-    u.lang       = lang === 'hi' ? 'hi-IN' : 'en-IN';
-    u.rate       = 0.88;
-    u.pitch      = 1.0;
-    u.volume     = 1.0;
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang  = lang === 'hi' ? 'hi-IN' : 'en-IN';
+    u.rate  = 0.88;
+    u.pitch = 1.0;
+    u.volume = 1.0;
 
     const voices = window.speechSynthesis.getVoices();
     if (lang === 'hi') {
-      // Try progressively broader matches for Hindi
       const v = voices.find(v => v.lang === 'hi-IN')
              || voices.find(v => v.lang.startsWith('hi'))
              || voices.find(v => v.name.toLowerCase().includes('hindi'));
       if (v) u.voice = v;
-      // If no Hindi voice, lang='hi-IN' alone will use the browser default Hindi TTS
     } else {
       const v = voices.find(v => v.lang === 'en-IN')
              || voices.find(v => v.lang === 'en-US')
@@ -43,7 +40,6 @@ function speak(text: string, lang: Lang) {
     window.speechSynthesis.speak(u);
   };
 
-  // Voices may not be loaded yet on first call — wait for them
   const voices = window.speechSynthesis.getVoices();
   if (voices.length > 0) {
     doSpeak();
@@ -74,7 +70,8 @@ export default function AgriChat() {
   const { getToken } = useAuth();
 
   const [open, setOpen]           = useState(false);
-  const [lang, setLang]           = useState<Lang>('en');
+  const [lang, setLangState]       = useState<Lang>('en');
+  const setLang = (l: Lang) => { langRef.current = l; setLangState(l); };
   const [messages, setMessages]   = useState<Message[]>([]);
   const [conversation, setConv]   = useState<ConvMsg[]>([]);
   const [input, setInput]         = useState('');
@@ -85,12 +82,14 @@ export default function AgriChat() {
   const [inited, setInited]       = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
 
-  const bottomRef    = useRef<HTMLDivElement>(null);
-  const inputRef     = useRef<HTMLInputElement>(null);
-  const mediaRecRef  = useRef<MediaRecorder | null>(null);
-  const chunksRef    = useRef<Blob[]>([]);
-  const timerRef     = useRef<ReturnType<typeof setInterval> | null>(null);
-  const streamRef    = useRef<MediaStream | null>(null);
+  const bottomRef       = useRef<HTMLDivElement>(null);
+  const inputRef        = useRef<HTMLInputElement>(null);
+  const mediaRecRef     = useRef<MediaRecorder | null>(null);
+  const chunksRef       = useRef<Blob[]>([]);
+  const timerRef        = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamRef       = useRef<MediaStream | null>(null);
+  const processVoiceRef = useRef<((blob: Blob) => void) | null>(null);
+  const langRef         = useRef<Lang>(lang);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -109,7 +108,6 @@ export default function AgriChat() {
     setMessages(p => [...p, { id: `${Date.now()}-${Math.random()}`, role, text, action }]);
   };
 
-  // ── Send text message to backend ──────────────────────────────────────────
   const sendMessage = useCallback(async (userText: string, isInit = false) => {
     if (loading) return;
     if (!isInit && !userText.trim()) return;
@@ -119,7 +117,8 @@ export default function AgriChat() {
 
     const initPrompt = lang === 'hi'
       ? 'नमस्ते! मेरे खाते की जानकारी दो।'
-      : 'Hello! Greet me and tell me about my account.';
+      : 'Hello! Tell me about my account.';
+
     const apiMsgs: ConvMsg[] = isInit
       ? [{ role: 'user', content: initPrompt }]
       : [...conversation, { role: 'user', content: userText }];
@@ -129,7 +128,7 @@ export default function AgriChat() {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat/message`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({ messages: apiMsgs, lang }),
+        body:    JSON.stringify({ messages: apiMsgs, lang: langRef.current }),
       });
       if (!res.ok) throw new Error('err');
       const data = await res.json();
@@ -144,30 +143,21 @@ export default function AgriChat() {
     }
   }, [loading, conversation, lang, autoSpeak, getToken]);
 
-  // ── Voice pipeline: audio → backend (Whisper + LLM) → reply ─────────────
-  // Single round-trip: backend transcribes with language-locked Whisper,
-  // then immediately runs LLM, returns { transcript, reply, conversation }
   const processVoice = useCallback(async (audioBlob: Blob) => {
     setTranscribing(true);
     window.speechSynthesis?.cancel();
     try {
       const token = await getToken();
-
-      // Determine file extension from blob mime type
       const mime = audioBlob.type || 'audio/webm';
-      const ext  = mime.includes('mp4') ? 'mp4'
-                 : mime.includes('ogg') ? 'ogg'
-                 : 'webm';
+      const ext  = mime.includes('mp4') ? 'mp4' : mime.includes('ogg') ? 'ogg' : 'webm';
 
       const form = new FormData();
-      // File with correct extension — Whisper uses this to pick the right decoder
       form.append('file', audioBlob, `audio.${ext}`);
-      // lang as plain string — critical for backend field parsing
-      form.append('lang', lang);
-      // Full conversation history for LLM context
+      const currentLang = langRef.current;
+      form.append('lang', currentLang);
       form.append('conversation', JSON.stringify(conversation));
 
-      console.log('[voice] sending', { lang, mime, ext, size: audioBlob.size });
+      console.log('[voice] sending →', { lang: currentLang, size: audioBlob.size });
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat/voice`, {
         method:  'POST',
@@ -182,13 +172,10 @@ export default function AgriChat() {
 
       const data = await res.json() as { transcript: string; reply: string; conversation: any[] };
 
-      // Show what was heard (in selected language — Whisper already transcribed correctly)
       if (data.transcript) {
         addMsg('user', data.transcript);
         setInput('');
       }
-
-      // Show LLM reply
       if (data.reply) {
         addMsg('assistant', data.reply, extractAction(data.reply));
         setConv(data.conversation || []);
@@ -196,15 +183,14 @@ export default function AgriChat() {
       }
     } catch (e: any) {
       console.error('Voice error:', e);
-      addMsg('assistant', lang === 'hi'
-        ? 'आवाज़ नहीं समझ पाया। फिर कोशिश करें।'
-        : "Couldn't process audio. Please try again.");
+      addMsg('assistant', lang === 'hi' ? 'आवाज़ नहीं समझ पाया। फिर कोशिश करें।' : "Couldn't process audio. Try again.");
     } finally {
       setTranscribing(false);
     }
   }, [getToken, lang, conversation, autoSpeak]);
 
-  // ── MediaRecorder: start ──────────────────────────────────────────────────
+  useEffect(() => { processVoiceRef.current = processVoice; }, [processVoice]);
+
   const startRecording = useCallback(async () => {
     if (recording || transcribing) return;
     try {
@@ -212,7 +198,6 @@ export default function AgriChat() {
       streamRef.current  = stream;
       chunksRef.current  = [];
 
-      // Pick a format the browser supports
       const mimeType = [
         'audio/webm;codecs=opus',
         'audio/webm',
@@ -228,33 +213,29 @@ export default function AgriChat() {
       };
 
       rec.onstop = () => {
-        // Stop all tracks so mic indicator goes away
         stream.getTracks().forEach(t => t.stop());
         streamRef.current = null;
 
         const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
         chunksRef.current = [];
         if (blob.size > 500) {
-          processVoice(blob);
+          processVoiceRef.current?.(blob);
         }
       };
 
-      rec.start(100); // collect data every 100ms
+      rec.start(100);
       setRecording(true);
       setRecSeconds(0);
-
-      // Seconds counter for UX
       timerRef.current = setInterval(() => setRecSeconds(s => s + 1), 1000);
     } catch (err: any) {
       if (err.name === 'NotAllowedError') {
-        alert('Microphone permission denied. Please allow mic access in your browser settings.');
+        alert('Microphone permission denied.');
       } else {
         console.error('Mic error:', err);
       }
     }
-  }, [recording, transcribing, processVoice]);
+  }, [recording, transcribing]);
 
-  // ── MediaRecorder: stop ───────────────────────────────────────────────────
   const stopRecording = useCallback(() => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setRecording(false);
@@ -288,7 +269,6 @@ export default function AgriChat() {
 
   return (
     <>
-      {/* Floating trigger */}
       <button onClick={() => setOpen(o => !o)} aria-label="AgriBot"
         className={clsx(
           'fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-2xl',
@@ -318,7 +298,10 @@ export default function AgriChat() {
               </div>
             </div>
 
-            {/* EN / HI */}
+            <div className="px-3 py-1 bg-white/30 text-white text-xs font-bold rounded-lg">
+              {lang === 'hi' ? 'हिंदी' : 'EN'}
+            </div>
+
             <div className="flex bg-white/20 rounded-xl overflow-hidden shrink-0">
               {(['en','hi'] as Lang[]).map(l => (
                 <button key={l} onClick={() => setLang(l)}
@@ -329,21 +312,19 @@ export default function AgriChat() {
               ))}
             </div>
 
-            {/* Mute AI */}
             <button onClick={() => { setAutoSpeak(a => !a); window.speechSynthesis?.cancel(); }}
               className={clsx('w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0 transition-colors',
                 autoSpeak ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-white/10 text-white/40 hover:bg-white/20')}>
               {autoSpeak ? '🔊' : '🔇'}
             </button>
 
-            {/* Clear */}
             <button onClick={clearChat}
               className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-xs text-white/60 shrink-0">
               🗑️
             </button>
           </div>
 
-          {/* Messages */}
+          {/* Messages area */}
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
             {messages.length === 0 && !loading && (
               <div className="text-center py-10">
@@ -393,7 +374,6 @@ export default function AgriChat() {
             <div ref={bottomRef} />
           </div>
 
-          {/* Quick prompts */}
           {!hasUserMsg && !loading && (
             <div className="px-4 pb-2 flex gap-1.5 flex-wrap shrink-0">
               {PROMPTS[lang].map(s => (
@@ -405,7 +385,6 @@ export default function AgriChat() {
             </div>
           )}
 
-          {/* Input row */}
           <div className="border-t border-[#e8ddd0] px-3 py-3 bg-white shrink-0">
             <form onSubmit={e => { e.preventDefault(); sendMessage(input); }} className="flex gap-2 items-center">
               <input
@@ -421,7 +400,6 @@ export default function AgriChat() {
                 className="flex-1 px-3.5 py-2.5 rounded-xl border border-[#e8ddd0] text-sm outline-none focus:ring-2 focus:ring-leaf-400 bg-[#fdf8f0] placeholder-[#b0a090] disabled:opacity-60 min-w-0"
               />
 
-              {/* Mic — MediaRecorder based, no SpeechRecognition flickering */}
               <button
                 type="button"
                 onClick={toggleMic}
@@ -447,7 +425,6 @@ export default function AgriChat() {
                 )}
               </button>
 
-              {/* Send */}
               <button type="submit" disabled={loading || !input.trim() || recording || transcribing}
                 className="w-11 h-11 rounded-xl bg-leaf-600 hover:bg-leaf-700 disabled:opacity-30 flex items-center justify-center text-white transition-colors shrink-0 active:scale-95">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -458,7 +435,7 @@ export default function AgriChat() {
 
             <p className="text-center text-xs text-[#b0a090] mt-1.5 h-4">
               {recording
-                ? (lang === 'hi' ? `🔴 रिकॉर्ड हो रहा है (${recSeconds}s) — रोकने के लिए ⏹️ दबाएं` : `🔴 Recording (${recSeconds}s) — press ⏹️ when done`)
+                ? (lang === 'hi' ? `🔴 रिकॉर्ड हो रहा है (${recSeconds}s)` : `🔴 Recording (${recSeconds}s)`)
                 : transcribing
                 ? (lang === 'hi' ? '⏳ Groq Whisper से ट्रांसक्रिप्ट हो रहा है…' : '⏳ Transcribing via Groq Whisper…')
                 : (lang === 'hi' ? '🎙️ दबाएं और बोलें, फिर ⏹️ से रोकें' : '🎙️ Press to record · press ⏹️ when done')}

@@ -25,14 +25,14 @@ const TOOLS: Groq.Chat.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          name:       { type: 'string',  description: 'Farm name' },
-          location:   { type: 'string',  description: 'Village/town name' },
-          state:      { type: 'string',  description: 'Indian state name' },
-          district:   { type: 'string',  description: 'District name' },
-          area_acres: { type: 'number',  description: 'Farm area in acres' },
-          soil_type:  { type: 'string',  description: 'Soil type: Loamy, Clay, Sandy-Loam, Clay-Loam, Black-Cotton, Red, Sandy' },
-          irrigation: { type: 'string',  description: 'Irrigation type: Rainfed, Canal, Borewell, Drip, Sprinkler' },
-          phone:      { type: 'string',  description: '10-digit mobile number (optional)' },
+          name:       { type: 'string', description: 'Farm name' },
+          location:   { type: 'string', description: 'Village/town name' },
+          state:      { type: 'string', description: 'Indian state name' },
+          district:   { type: 'string', description: 'District name' },
+          area_acres: { type: 'number', description: 'Farm area in acres' },
+          soil_type:  { type: 'string', description: 'Soil type: Loamy, Clay, Sandy-Loam, Clay-Loam, Black-Cotton, Red, Sandy' },
+          irrigation: { type: 'string', description: 'Irrigation type: Rainfed, Canal, Borewell, Drip, Sprinkler' },
+          phone:      { type: 'string', description: '10-digit mobile number (optional)' },
         },
         required: ['name', 'location', 'state', 'district', 'area_acres'],
       },
@@ -46,7 +46,7 @@ const TOOLS: Groq.Chat.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          farm_id: { type: 'string', description: 'The farm ID to create a plan for' },
+          farm_id: { type: 'string', description: 'The farm UUID from get_farmer_context farms list. NEVER pass a farm name — always use the id field from the farms array.' },
         },
         required: ['farm_id'],
       },
@@ -60,7 +60,7 @@ const TOOLS: Groq.Chat.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          farm_id:         { type: 'string', description: 'Farm ID' },
+          farm_id:         { type: 'string', description: 'Farm UUID from get_farmer_context. Never pass farm name — use the id field.' },
           crop_name:       { type: 'string', description: 'Crop name' },
           actual_yield_kg: { type: 'number', description: 'Actual yield in kg' },
           harvest_date:    { type: 'string', description: 'Harvest date YYYY-MM-DD' },
@@ -108,7 +108,7 @@ const TOOLS: Groq.Chat.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          farm_id: { type: 'string', description: 'Farm ID to get weather for' },
+          farm_id: { type: 'string', description: 'Farm UUID from get_farmer_context. Never pass farm name.' },
         },
         required: ['farm_id'],
       },
@@ -129,17 +129,37 @@ async function executeTool(
     case 'get_farmer_context': {
       const [userRes, farmsRes, plansRes, productionRes, supplyRes] = await Promise.all([
         query(`SELECT full_name, email, phone, created_at FROM users WHERE id=$1`, [userId]),
-        query(`SELECT f.*, (SELECT COUNT(*) FROM crop_plans cp WHERE cp.farm_id=f.id) AS plan_count FROM farms f WHERE f.farmer_id=$1 ORDER BY f.created_at DESC`, [userId]),
-        query(`SELECT cp.*, f.name AS farm_name FROM crop_plans cp JOIN farms f ON f.id=cp.farm_id WHERE cp.farmer_id=$1 AND cp.status='active' ORDER BY cp.created_at DESC LIMIT 5`, [userId]),
-        query(`SELECT pr.*, f.name AS farm_name FROM production_records pr JOIN farms f ON f.id=pr.farm_id WHERE pr.farmer_id=$1 ORDER BY pr.created_at DESC LIMIT 5`, [userId]),
+        query(`SELECT f.id, f.name, f.location, f.state, f.district, f.area_acres, f.soil_type, f.irrigation,
+               (SELECT COUNT(*) FROM crop_plans cp WHERE cp.farm_id=f.id) AS plan_count
+               FROM farms f WHERE f.farmer_id=$1 ORDER BY f.created_at DESC`, [userId]),
+        query(`SELECT cp.id, cp.crop_name, cp.season, cp.year, cp.status, cp.sowing_date, cp.harvest_date,
+               cp.expected_yield_kg, cp.farm_id, f.name AS farm_name
+               FROM crop_plans cp JOIN farms f ON f.id=cp.farm_id
+               WHERE cp.farmer_id=$1 AND cp.status='active' ORDER BY cp.created_at DESC LIMIT 5`, [userId]),
+        query(`SELECT pr.id, pr.crop_name, pr.actual_yield_kg, pr.harvest_date, pr.quality_grade,
+               pr.farm_id, f.name AS farm_name
+               FROM production_records pr JOIN farms f ON f.id=pr.farm_id
+               WHERE pr.farmer_id=$1 ORDER BY pr.created_at DESC LIMIT 5`, [userId]),
         query(`SELECT COUNT(*) AS count FROM supply_items WHERE farmer_id=$1 AND status='pending'`, [userId]),
       ]);
+
+      const farms = farmsRes.rows.map((f: any) => ({
+        farm_id:    f.id,
+        name:       f.name,
+        location:   `${f.district}, ${f.state}`,
+        area_acres: f.area_acres,
+        soil_type:  f.soil_type,
+        irrigation: f.irrigation,
+        plan_count: f.plan_count,
+      }));
+
       return {
-        farmer:          userRes.rows[0],
-        farms:           farmsRes.rows,
-        active_plans:    plansRes.rows,
-        recent_production: productionRes.rows,
-        pending_supply:  parseInt(supplyRes.rows[0]?.count || '0'),
+        farmer:             userRes.rows[0],
+        farms,
+        active_plans:       plansRes.rows,
+        recent_production:  productionRes.rows,
+        pending_supply:     parseInt(supplyRes.rows[0]?.count || '0'),
+        instruction:        'To create a crop plan or log production, use farm_id from the farms array above.',
       };
     }
 
@@ -154,12 +174,23 @@ async function executeTool(
     }
 
     case 'create_crop_plan': {
-      // Verify farm belongs to farmer
+      let resolvedFarmId: string = args.farm_id;
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(args.farm_id);
+      if (!isUuid) {
+        const { rows: nameMatch } = await query(
+          `SELECT id FROM farms WHERE farmer_id=$1 AND name ILIKE $2 LIMIT 1`,
+          [userId, `%${args.farm_id}%`]
+        );
+        if (!nameMatch[0]) return { success: false, error: `Farm "${args.farm_id}" not found. Please call get_farmer_context to get the correct farm ID.` };
+        resolvedFarmId = nameMatch[0].id;
+      }
+
       const { rows: farmCheck } = await query(
         `SELECT f.id, f.phone, u.phone AS user_phone FROM farms f JOIN users u ON u.id=f.farmer_id WHERE f.id=$1 AND f.farmer_id=$2`,
-        [args.farm_id, userId]
+        [resolvedFarmId, userId]
       );
       if (!farmCheck[0]) return { success: false, error: 'Farm not found' };
+      args.farm_id = resolvedFarmId;
 
       const phone = farmCheck[0].phone || farmCheck[0].user_phone || null;
       const plan  = await generateAICropPlan(args.farm_id);
@@ -181,10 +212,20 @@ async function executeTool(
     }
 
     case 'log_production': {
+      let farmId: string = args.farm_id;
+      const isUuid2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(args.farm_id);
+      if (!isUuid2) {
+        const { rows: nm } = await query(
+          `SELECT id FROM farms WHERE farmer_id=$1 AND name ILIKE $2 LIMIT 1`,
+          [userId, `%${args.farm_id}%`]
+        );
+        if (!nm[0]) return { success: false, error: `Farm "${args.farm_id}" not found. Use farm UUID from get_farmer_context.` };
+        farmId = nm[0].id;
+      }
       const { rows } = await query(
         `INSERT INTO production_records (farm_id,farmer_id,crop_name,actual_yield_kg,harvest_date,quality_grade,notes)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [args.farm_id, userId, args.crop_name, args.actual_yield_kg,
+        [farmId, userId, args.crop_name, args.actual_yield_kg,
          args.harvest_date || null, args.quality_grade || 'ungraded', args.notes || null]
       );
       return { success: true, record: rows[0] };
@@ -230,29 +271,70 @@ async function executeTool(
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 function buildSystemPrompt(lang: 'en' | 'hi'): string {
-  if (lang === 'hi') {
-    return `आप AgriConnect के AI सहायक हैं — एक भारतीय किसान सहायक।
+  const langRule = lang === 'hi'
+    ? `LANGUAGE: You must ALWAYS reply in Hindi (Devanagari script हिंदी) — every single message, no exceptions. Not Gujarati, not English. ONLY Hindi. Example: "आपके दो खेत हैं — Jack1 और Farm2।"`
+    : `LANGUAGE: Always reply in English only.`;
 
-CRITICAL LANGUAGE RULE: आपको हमेशा, बिना किसी अपवाद के, केवल हिंदी में जवाब देना है। चाहे किसान हिंदी में बोले, अंग्रेजी में बोले, या मिश्रित भाषा में — आपका जवाब हमेशा हिंदी में होगा। कभी भी English में जवाब न दें।
+  return `You are AgriConnect's AI assistant for Indian farmers.
 
-आप किसान के खेत, फसल योजनाएं, उत्पादन रिकॉर्ड देख सकते हैं और नए काम कर सकते हैं।
-हर बातचीत की शुरुआत में get_farmer_context टूल को कॉल करें।
-जब किसान कुछ करने के लिए कहे — खेत जोड़ना, फसल योजना बनाना, रिकॉर्ड लॉग करना — तो सीधे tool call करें।
-छोटे, बोलचाल के जवाब दें। कोई markdown या bullet points नहीं। सीधे वाक्यों में बोलें।
-Tool call के बाद हिंदी में बताएं कि क्या किया।`;
-  }
-  return `You are AgriConnect's AI assistant — a smart farming advisor for Indian farmers.
+${langRule}
 
-CRITICAL LANGUAGE RULE: Always respond in English only. No matter what language the user speaks in, always reply in English.
+TOOL WORKFLOW:
+1. Always call get_farmer_context at the start of the conversation.
+2. get_farmer_context returns: farms: [{ farm_id: "uuid", name: "Jack1", ... }]
+3. When farmer asks to create a crop plan or log harvest for a farm:
+   - Find the farm by name in the farms list you already loaded
+   - Use its farm_id (UUID) when calling the tool
+   - NEVER ask the farmer for an ID — you already have it
+   - NEVER pass a farm name as farm_id
 
-You have access to the farmer's account: farms, crop plans, production records, supply status.
-ALWAYS call get_farmer_context first at the start of the conversation.
-When the farmer asks you to DO something (add farm, create plan, log harvest) — call the appropriate tool directly.
-Keep responses SHORT and conversational — this is a voice chat. No markdown, no bullet points. Just natural sentences.
-After calling a tool, briefly summarise what you did in one sentence.`;
+EXAMPLE:
+Farmer: "Jack1 ke liye crop plan banao"
+→ You see farms: [{ farm_id: "abc-123", name: "Jack1" }]
+→ You call: create_crop_plan({ farm_id: "abc-123" })
+→ You do NOT ask for ID. You do NOT say you need more info.`;
 }
 
-// ── Route ─────────────────────────────────────────────────────────────────────
+// Final answer prompt — same language rules, no tools
+function buildFinalAnswerPrompt(lang: 'en' | 'hi'): string {
+  if (lang === 'hi') {
+    return `तुम AgriConnect के हिंदी सहायक हो।
+नीचे दिए tool results के आधार पर किसान को 2-3 वाक्यों में बताओ।
+सख्त नियम: केवल हिंदी (देवनागरी लिपि में) में लिखो। गुजराती, अंग्रेजी या कोई अन्य भाषा नहीं।
+उदाहरण सही जवाब: "आपके Jack1 खेत के लिए गेहूं की फसल योजना बन गई है। बुवाई 25 मार्च को करें।"
+कोई markdown, bullets या headings नहीं।`;
+  }
+  return `You are AgriConnect's English assistant.
+Based on the tool results below, tell the farmer what happened in 2-3 short sentences.
+English only. No markdown. No bullets.`;
+}
+
+// ── Force-translate reply to Hindi if lang=hi and reply is not Devanagari ────
+async function ensureHindi(text: string, groqClient: Groq): Promise<string> {
+  if (!text.trim()) return text;
+  const hasDevanagari = /[ऀ-ॿ]/.test(text);
+  if (hasDevanagari) return text;
+  try {
+    const res = await groqClient.chat.completions.create({
+      model:       'llama-3.3-70b-versatile',
+      temperature: 0.1,
+      max_tokens:  600,
+      messages: [
+        {
+          role:    'system',
+          content: 'Translate the following text to Hindi (Devanagari script). Output ONLY the Hindi translation. No explanation. No English words.',
+        },
+        { role: 'user', content: text },
+      ],
+    });
+    const translated = res.choices[0].message.content?.trim() || '';
+    return /[ऀ-ॿ]/.test(translated) ? translated : text;
+  } catch {
+    return text;
+  }
+}
+
+// ── Routes ─────────────────────────────────────────────────────────────────────
 export async function chatRoutes(app: FastifyInstance) {
 
   app.post('/message', async (req, reply) => {
@@ -265,22 +347,16 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const userId = req.auth!.userId;
 
-    // Build conversation with system prompt + hard language enforcer
-    const langEnforcer = lang === 'hi'
-      ? 'REMINDER: तुम्हें केवल हिंदी में जवाब देना है। अंग्रेजी में एक भी शब्द नहीं।'
-      : 'REMINDER: Respond only in English.';
-
     const conversation: Groq.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: buildSystemPrompt(lang) },
       ...messages,
-      { role: 'system', content: langEnforcer },
     ];
 
-    // Agentic loop — keep calling until no more tool calls
-    let iterations = 0;
-    const MAX_ITERATIONS = 6;
+    let toolsWereUsed = false;
+    let iterations    = 0;
+    const MAX_ITER    = 6;
 
-    while (iterations < MAX_ITERATIONS) {
+    while (iterations < MAX_ITER) {
       iterations++;
 
       const response = await groq.chat.completions.create({
@@ -288,54 +364,88 @@ export async function chatRoutes(app: FastifyInstance) {
         messages:    conversation,
         tools:       TOOLS,
         tool_choice: 'auto',
-        temperature: 0.4,
-        max_tokens:  1024,
+        temperature: 0.3,
+        max_tokens:  512,
       });
 
       const msg = response.choices[0].message;
       conversation.push(msg as any);
 
-      // No tool calls — final text response
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        return { reply: msg.content, conversation: conversation.slice(1) }; // strip system
-      }
+      if (!msg.tool_calls || msg.tool_calls.length === 0) break;
 
-      // Execute all tool calls in parallel
+      toolsWereUsed = true;
+
       const toolResults = await Promise.all(
         msg.tool_calls.map(async (tc) => {
-          const args   = JSON.parse(tc.function.arguments);
-          const result = await executeTool(tc.function.name, args, userId, userId);
-          return {
-            role:         'tool' as const,
-            tool_call_id: tc.id,
-            content:      JSON.stringify(result),
-          };
+          let result: any;
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            result = await executeTool(tc.function.name, args, userId, userId);
+          } catch (toolErr: any) {
+            result = { success: false, error: toolErr.message || 'Tool failed' };
+          }
+          return { role: 'tool' as const, tool_call_id: tc.id, content: JSON.stringify(result) };
         })
       );
-
       conversation.push(...toolResults);
-      // Re-inject language reminder after each tool result so final answer stays in correct language
-      conversation.push({
-        role: 'system',
-        content: lang === 'hi'
-          ? 'अब हिंदी में जवाब दो। अंग्रेजी बिल्कुल नहीं।'
-          : 'Now respond in English only.',
-      });
     }
 
-    return { reply: lang === 'hi' ? 'माफ़ करें, कुछ तकनीकी समस्या हुई। फिर से कोशिश करें।' : 'Sorry, something went wrong. Please try again.', conversation: conversation.slice(1) };
+    const effectiveLang = lang;
+    const triggerMsg = effectiveLang === 'hi'
+      ? 'ऊपर के results के बारे में हिंदी में बताओ।'
+      : 'Summarise what was done.';
+
+    const finalConversation: Groq.Chat.ChatCompletionMessageParam[] = [
+      { role: 'system', content: buildFinalAnswerPrompt(effectiveLang) },
+      ...conversation.filter(m => m.role !== 'system'),
+      { role: 'user', content: triggerMsg },
+    ];
+
+    const finalResponse = await groq.chat.completions.create({
+      model:       'llama-3.3-70b-versatile',
+      messages:    finalConversation,
+      temperature: 0.3,
+      max_tokens:  512,
+    });
+
+    let assistantReply = finalResponse.choices[0].message.content || '';
+
+    const hasDevanagari = (t: string) => /[ऀ-ॿ]/.test(t);
+    let resolvedReply = assistantReply;
+
+    if (!resolvedReply.trim() || (effectiveLang === 'hi' && !hasDevanagari(resolvedReply))) {
+      const fallback = await groq.chat.completions.create({
+        model:    'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: buildFinalAnswerPrompt(effectiveLang) },
+          ...conversation.filter(m => m.role !== 'system'),
+          { role: 'user', content: effectiveLang === 'hi'
+            ? 'इन tool results को देखकर केवल हिंदी में (देवनागरी लिपि में) 2-3 वाक्य बोलो।'
+            : 'Summarise what happened in 2-3 English sentences.' },
+        ],
+        temperature: 0.3,
+        max_tokens:  400,
+      });
+      resolvedReply = fallback.choices[0].message.content || (effectiveLang === 'hi' ? 'काम हो गया।' : 'Done.');
+    }
+
+    if (effectiveLang === 'hi') {
+      resolvedReply = await ensureHindi(resolvedReply, groq);
+    }
+
+    return {
+      reply: resolvedReply,
+      conversation: conversation.filter(m => m.role !== 'system'),
+    };
   });
 
   // ── POST /api/chat/voice ─────────────────────────────────────────────────
-  // Full pipeline: audio → Whisper (language-locked) → LLM → reply
-  // Returns: { transcript, reply, conversation }
   app.post('/voice', async (req, reply) => {
     if (!requireAuth(req, reply)) return;
 
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: 'No audio file' });
 
-    // Fastify multipart fields can be { value } objects or plain strings depending on version
     const getField = (name: string): string => {
       const f = (data.fields as any)?.[name];
       if (!f) return '';
@@ -344,18 +454,15 @@ export async function chatRoutes(app: FastifyInstance) {
       return f.value ?? '';
     };
 
-    const lang    = (getField('lang') || 'en') as 'en' | 'hi';
+    const frontendLang = (getField('lang') || 'en') as 'en' | 'hi';
     const convRaw = getField('conversation') || '[]';
     const userId  = req.auth!.userId;
 
-    // Log for debugging
-    req.log.info({ lang, convRawLen: convRaw.length }, '[voice] received');
+    req.log.info({ frontendLang, convRawLen: convRaw.length }, '[voice] received – frontend requested this lang');
 
-    // Parse existing conversation
     let prevConv: Groq.Chat.ChatCompletionMessageParam[] = [];
     try { prevConv = JSON.parse(convRaw); } catch {}
 
-    // Read audio bytes
     const chunks: Buffer[] = [];
     for await (const chunk of data.file) chunks.push(chunk);
     const audioBuffer = Buffer.concat(chunks);
@@ -364,10 +471,9 @@ export async function chatRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Audio too short' });
     }
 
-    // ── Step 1: Whisper transcription with language locked ──────────────────
-    let transcript = '';
+    // ── Step 1: Whisper transcription ────────────────────────────────────────
+    let rawTranscript = '';
     try {
-      // Determine correct file extension from mime type
       const mime     = data.mimetype || 'audio/webm';
       const ext      = mime.includes('mp4') ? 'mp4'
                      : mime.includes('ogg') ? 'ogg'
@@ -379,15 +485,15 @@ export async function chatRoutes(app: FastifyInstance) {
       const audioBlob   = new Blob([audioBuffer], { type: mime });
       whisperForm.append('file', audioBlob, filename);
       whisperForm.append('model', 'whisper-large-v3-turbo');
-      whisperForm.append('response_format', 'verbose_json'); // gives us detected language too
-      // Hard-lock language — critical for Hindi accuracy
-      whisperForm.append('language', lang === 'hi' ? 'hi' : 'en');
-      // Prompt hint dramatically improves Whisper accuracy for Indian languages
+      whisperForm.append('response_format', 'verbose_json');
+
+      whisperForm.append('language', frontendLang === 'hi' ? 'hi' : 'en');
+
       whisperForm.append(
         'prompt',
-        lang === 'hi'
-          ? 'यह एक भारतीय किसान की हिंदी में बातचीत है। खेती, फसल, मिट्टी, सिंचाई जैसे शब्द आ सकते हैं।'
-          : 'This is an Indian farmer speaking in English about farming, crops, soil, irrigation.'
+        frontendLang === 'hi'
+          ? `यह पूरी तरह से हिंदी में है। केवल हिंदी शब्द लिखें। कोई अंग्रेजी शब्द नहीं। भारतीय किसान की फसल, खेती, मिट्टी, सिंचाई, फार्म की बातचीत।`
+          : `This is completely in English only. Use only English words. No Hindi. Indian farmer talking about crops, farming, soil, irrigation.`
       );
 
       const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
@@ -402,81 +508,167 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       const whisperResult = await whisperRes.json() as { text?: string; language?: string };
-      req.log.info({ detectedLang: whisperResult.language, transcript: whisperResult.text?.slice(0, 80) }, '[voice] whisper result');
-      transcript = (whisperResult.text || '').trim();
+      rawTranscript = (whisperResult.text || '').trim();
+
+      req.log.info({
+        frontendLang,
+        detectedByWhisper: whisperResult.language,
+        rawTranscript: rawTranscript.slice(0, 120)
+      }, '[voice] whisper raw result');
     } catch (err: any) {
       console.error('[voice/whisper]', err.message);
       return reply.code(502).send({ error: 'Could not transcribe audio: ' + err.message });
     }
 
-    if (!transcript) {
+    if (!rawTranscript) {
       return reply.code(400).send({ error: 'No speech detected' });
     }
 
-    // ── Step 2: Run through LLM with language locked ────────────────────────
-    const langEnforcer = lang === 'hi'
-      ? 'REMINDER: तुम्हें केवल हिंदी में जवाब देना है। अंग्रेजी में एक भी शब्द नहीं।'
-      : 'REMINDER: Respond only in English.';
+    // ── Step 1b: Force correct language based on frontend request ─────────────
+    const hasDevanagari = (t: string) => /[ऀ-ॿ]/.test(t);
+    let finalTranscript = rawTranscript;
 
+    if (frontendLang === 'hi' && !hasDevanagari(rawTranscript)) {
+      try {
+        const forceHindi = await groq.chat.completions.create({
+          model:       'llama-3.3-70b-versatile',
+          temperature: 0.0,
+          max_tokens:  500,
+          messages: [
+            {
+              role: 'system',
+              content: 'यह टेक्स्ट हिंदी में बोला गया था लेकिन अंग्रेजी में लिखा आया है। इसे सही देवनागरी हिंदी में बदल दो। केवल हिंदी आउटपुट। कोई अंग्रेजी शब्द नहीं।'
+            },
+            { role: 'user', content: rawTranscript }
+          ]
+        });
+        const translated = forceHindi.choices[0].message.content?.trim() || '';
+        if (hasDevanagari(translated)) {
+          finalTranscript = translated;
+          req.log.info({
+            raw: rawTranscript,
+            forcedTo: 'Hindi',
+            result: translated.slice(0, 100)
+          }, '[voice] HACK: forced to Hindi');
+        }
+      } catch (e) {
+        req.log.warn({ error: (e as Error).message }, 'Force Hindi translation failed');
+      }
+    }
+    else if (frontendLang === 'en' && hasDevanagari(rawTranscript)) {
+      try {
+        const forceEnglish = await groq.chat.completions.create({
+          model:       'llama-3.3-70b-versatile',
+          temperature: 0.0,
+          messages: [
+            {
+              role: 'system',
+              content: 'यह टेक्स्ट हिंदी में है लेकिन यूजर ने English चुना है। इसे सही अंग्रेजी में अनुवाद करो। केवल अंग्रेजी आउटपुट। कोई व्याख्या नहीं।'
+            },
+            { role: 'user', content: rawTranscript }
+          ]
+        });
+        finalTranscript = forceEnglish.choices[0].message.content?.trim() || rawTranscript;
+        req.log.info({ raw: rawTranscript, forcedTo: 'English' }, '[voice] HACK: forced to English');
+      } catch (e) {
+        req.log.warn({ error: (e as Error).message }, 'Force English translation failed');
+      }
+    }
+
+    const activeLang = frontendLang;
+
+    // ── Step 2: LLM tool-calling phase ───────────────────────────────────────
     const conversation: Groq.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: buildSystemPrompt(lang) },
+      { role: 'system', content: buildSystemPrompt(activeLang) },
       ...prevConv,
-      { role: 'user', content: transcript },
-      { role: 'system', content: langEnforcer },
+      { role: 'user', content: finalTranscript },
     ];
 
-    let llmReply = '';
     let iterations = 0;
-    const MAX_ITERATIONS = 6;
+    const MAX_ITER = 6;
 
-    while (iterations < MAX_ITERATIONS) {
+    while (iterations < MAX_ITER) {
       iterations++;
       const response = await groq.chat.completions.create({
         model:       'llama-3.3-70b-versatile',
         messages:    conversation,
         tools:       TOOLS,
         tool_choice: 'auto',
-        temperature: 0.4,
+        temperature: 0.3,
         max_tokens:  512,
       });
 
       const msg = response.choices[0].message;
       conversation.push(msg as any);
 
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        llmReply = msg.content || '';
-        break;
-      }
+      if (!msg.tool_calls || msg.tool_calls.length === 0) break;
 
       const toolResults = await Promise.all(
         msg.tool_calls.map(async (tc) => {
-          const args   = JSON.parse(tc.function.arguments);
-          const result = await executeTool(tc.function.name, args, userId, userId);
-          return {
-            role:         'tool' as const,
-            tool_call_id: tc.id,
-            content:      JSON.stringify(result),
-          };
+          let result: any;
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            result = await executeTool(tc.function.name, args, userId, userId);
+          } catch (toolErr: any) {
+            result = { success: false, error: toolErr.message || 'Tool failed' };
+          }
+          return { role: 'tool' as const, tool_call_id: tc.id, content: JSON.stringify(result) };
         })
       );
       conversation.push(...toolResults);
-      conversation.push({
-        role: 'system',
-        content: lang === 'hi'
-          ? 'अब हिंदी में जवाब दो। अंग्रेजी बिल्कुल नहीं।'
-          : 'Now respond in English only.',
-      });
     }
 
-    // Return transcript so frontend can show what was heard, plus the reply
+    // ── Step 3: Final answer phase ───────────────────────────────────────────
+    const triggerMsg = activeLang === 'hi'
+      ? 'ऊपर के results के बारे में हिंदी में बताओ।'
+      : 'Summarise what was done.';
+
+    const finalConversation: Groq.Chat.ChatCompletionMessageParam[] = [
+      { role: 'system', content: buildFinalAnswerPrompt(activeLang) },
+      ...conversation.filter(m => m.role !== 'system'),
+      { role: 'user', content: triggerMsg },
+    ];
+
+    const finalResponse = await groq.chat.completions.create({
+      model:       'llama-3.3-70b-versatile',
+      messages:    finalConversation,
+      temperature: 0.3,
+      max_tokens:  512,
+    });
+
+    let llmReply = finalResponse.choices[0].message.content || '';
+
+    const hasDevanagariV = (t: string) => /[ऀ-ॿ]/.test(t);
+    let resolvedVoiceReply = llmReply;
+
+    if (!resolvedVoiceReply.trim() || (activeLang === 'hi' && !hasDevanagariV(resolvedVoiceReply))) {
+      const fallback = await groq.chat.completions.create({
+        model:    'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: buildFinalAnswerPrompt(activeLang) },
+          ...conversation.filter(m => m.role !== 'system'),
+          { role: 'user', content: activeLang === 'hi'
+            ? 'इन tool results को देखकर केवल हिंदी में (देवनागरी लिपि में) 2-3 वाक्य बोलो।'
+            : 'Summarise what happened in 2-3 English sentences.' },
+        ],
+        temperature: 0.3,
+        max_tokens:  400,
+      });
+      resolvedVoiceReply = fallback.choices[0].message.content || (activeLang === 'hi' ? 'काम हो गया।' : 'Done.');
+    }
+
+    if (activeLang === 'hi') {
+      resolvedVoiceReply = await ensureHindi(resolvedVoiceReply, groq);
+    }
+
     return {
-      transcript,
-      reply:        llmReply,
-      conversation: conversation.slice(1), // strip system prompt
+      transcript:   finalTranscript,
+      reply:        resolvedVoiceReply,
+      conversation: conversation.filter(m => m.role !== 'system'),
     };
   });
 
-  // ── POST /api/chat/transcribe (kept for compatibility) ────────────────────
+  // ── POST /api/chat/transcribe (compatibility) ─────────────────────────────
   app.post('/transcribe', async (req, reply) => {
     if (!requireAuth(req, reply)) return;
     const data = await req.file();
@@ -502,5 +694,4 @@ export async function chatRoutes(app: FastifyInstance) {
       return reply.code(502).send({ error: err.message || 'Transcription failed' });
     }
   });
-
 }

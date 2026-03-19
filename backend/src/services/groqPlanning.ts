@@ -9,80 +9,114 @@ export interface AICropPlan {
   variety:           string;
   season:            string;
   year:              number;
-  sowing_date:       string;        // ISO date
-  harvest_date:      string;        // ISO date
+  sowing_date:       string;
+  harvest_date:      string;
   duration_days:     number;
-  area_acres:        number;        // same as farm area
+  area_acres:        number;
   expected_yield_kg: number;
-  market_demand:     string;        // 'high' | 'medium' | 'low'
-  rationale:         string;        // why this crop was chosen
+  market_demand:     string;
+  rationale:         string;
   risks:             string[];
-  timeline: Array<{
-    label:       string;
-    date:        string;
-    description: string;
-  }>;
-  input_recommendations: Array<{
-    item:      string;
-    quantity:  string;
-    timing:    string;
-  }>;
+  timeline: Array<{ label: string; date: string; description: string }>;
+  input_recommendations: Array<{ item: string; quantity: string; timing: string }>;
   weather_alerts: string[];
 }
 
 interface FarmContext {
-  name:        string;
-  state:       string;
-  district:    string;
-  area_acres:  number;
-  soil_type:   string;
-  irrigation:  string;
-  latitude:    number | null;
-  longitude:   number | null;
+  id: string; name: string; state: string; district: string;
+  area_acres: number; soil_type: string; irrigation: string;
+  latitude: number | null; longitude: number | null;
 }
 
-function getCurrentSeason(): { name: string; sowingMonth: number } {
-  const month = new Date().getMonth() + 1;
-  if (month >= 6  && month <= 9)  return { name: 'kharif', sowingMonth: month };
-  if (month >= 10 || month <= 2)  return { name: 'rabi',   sowingMonth: month <= 2 ? month : 10 };
-  return { name: 'zaid', sowingMonth: 3 };
+function getCurrentSeason(): string {
+  const m = new Date().getMonth() + 1;
+  if (m >= 6 && m <= 9)  return 'kharif';
+  if (m >= 10 || m <= 2) return 'rabi';
+  return 'zaid';
 }
 
-function buildPrompt(farm: FarmContext, weather: WeatherData | null): string {
-  const today      = new Date().toISOString().split('T')[0];
-  const season     = getCurrentSeason();
+const SEASON_CROPS: Record<string, string[]> = {
+  kharif: ['Rice','Maize','Cotton','Soybean','Groundnut','Sugarcane','Bajra','Jowar','Moong','Urad','Arhar','Sesame','Jute','Turmeric','Ginger','Chilli'],
+  rabi:   ['Wheat','Mustard','Chickpea','Lentil','Pea','Barley','Coriander','Cumin','Fenugreek','Potato','Onion','Garlic','Sunflower','Linseed'],
+  zaid:   ['Watermelon','Muskmelon','Cucumber','Bottle Gourd','Ridge Gourd','Cowpea','Moong','Sunflower','Maize'],
+};
+
+const STATE_CONTEXT: Record<string, string> = {
+  'Punjab':          'Major wheat/rice belt. High margins on maize, mustard, vegetables. Good mandi connectivity.',
+  'Haryana':         'Wheat/rice surplus. Better margins on oilseeds, pulses, and seasonal vegetables.',
+  'Uttar Pradesh':   'Diverse market. Sugarcane, wheat, potato, vegetables have strong local demand.',
+  'Maharashtra':     'Cotton/soybean in Vidarbha. Onion in Nashik. Strong horticulture market.',
+  'Madhya Pradesh':  'Soybean heartland. Wheat, gram, maize also strong. Central market hub.',
+  'Rajasthan':       'Arid climate — bajra, jowar, cumin, mustard ideal. Drip opens horticulture.',
+  'Gujarat':         'Cotton, groundnut, cumin export market. Bt cotton premium in Saurashtra.',
+  'Karnataka':       'Ragi, maize, sunflower strong. Premium vegetable market near Bengaluru.',
+  'Andhra Pradesh':  'Rice, chilli export crop. Banana near deltas. Papaya also strong.',
+  'Tamil Nadu':      'Rice, banana, tapioca. Very high vegetable demand near Chennai.',
+  'Bihar':           'Wheat, maize, vegetables. Potato, onion demand high. Storage infrastructure poor.',
+  'West Bengal':     'Rice, jute, potato. High vegetable demand near Kolkata.',
+  'Telangana':       'Cotton, soybean, maize. Red chilli significant export. Turmeric near Nizamabad.',
+  'Odisha':          'Rice, maize. Vegetable growing near Bhubaneswar. Turmeric in tribal belt.',
+  'Jharkhand':       'Maize, vegetables. Tomato, cauliflower near urban centres.',
+};
+
+function buildPrompt(
+  farm: FarmContext,
+  weather: WeatherData | null,
+  previousCrops: string[],
+  existingPlanCrops: string[]
+): string {
+  const today   = new Date().toISOString().split('T')[0];
+  const season  = getCurrentSeason();
+  const eligible = SEASON_CROPS[season].join(', ');
+
   const weatherSummary = weather
-    ? `Current: ${weather.temp}°C, humidity ${weather.humidity}%, wind ${weather.windSpeed}m/s, ${weather.description}.
-       7-day forecast: ${weather.forecast.map(d => `${d.date}: ${d.temp}°C, rain ${d.rain}mm`).join(' | ')}`
-    : 'Weather data unavailable';
+    ? `Temp: ${weather.temp}°C, Humidity: ${weather.humidity}%, Wind: ${weather.windSpeed}m/s, ${weather.description}.
+7-day forecast: ${weather.forecast.slice(0,5).map(d => `${d.date}: ${d.temp}°C rain ${d.rain}mm`).join(' | ')}`
+    : `No live data — use historical averages for ${farm.state} in ${season} season.`;
 
-  return `You are an expert agricultural advisor for Indian farmers. 
-Analyze the following farm data and generate a complete, autonomous crop plan.
-Do NOT ask for more input — make the best decision based on what is provided.
+  const avoidCrops = [...new Set([...previousCrops.slice(0,3), ...existingPlanCrops])].filter(Boolean);
+  const avoidLine  = avoidCrops.length > 0
+    ? `CROP ROTATION — DO NOT RECOMMEND THESE (already on this farm): ${avoidCrops.join(', ')}. Choose something different.`
+    : `No crop history — choose freely from the eligible list for ${season}.`;
 
-FARM DATA:
+  const marketNote = STATE_CONTEXT[farm.state] || `Check ${farm.state} mandi prices for best crop choice.`;
+
+  return `You are a senior Indian agronomist with 20 years field experience in ${farm.state}.
+
+FARM:
 - Name: ${farm.name}
-- Location: ${farm.district}, ${farm.state}, India
+- Location: ${farm.district}, ${farm.state}
 - Area: ${farm.area_acres} acres
-- Soil Type: ${farm.soil_type || 'Unknown (assume loamy)'}
-- Irrigation: ${farm.irrigation || 'Unknown (assume rainfed)'}
-- Today's Date: ${today}
-- Current Season: ${season.name}
+- Soil: ${farm.soil_type || 'Loamy'}
+- Irrigation: ${farm.irrigation || 'Rainfed'}
+- Date: ${today}
+- Season: ${season.toUpperCase()}
 
-WEATHER CONDITIONS:
+WEATHER (${farm.district}):
 ${weatherSummary}
 
-TASK:
-1. Choose the SINGLE BEST crop for this farm right now based on soil, irrigation, season, weather, and market demand in ${farm.state}
-2. Generate a complete planting timeline from today to harvest
-3. Provide input recommendations (fertilizers, pesticides, irrigation schedule)
-4. Assess risks and market demand
+MARKET (${farm.state}):
+${marketNote}
 
-Respond ONLY with a valid JSON object matching this exact structure (no markdown, no explanation):
+ELIGIBLE CROPS FOR ${season.toUpperCase()}:
+${eligible}
+
+${avoidLine}
+
+DECISION CRITERIA — think through all four before choosing:
+1. SOIL FIT: Which crop suits ${farm.soil_type || 'loamy'} soil best in ${season}?
+2. WATER FIT: Which crop suits ${farm.irrigation || 'rainfed'} irrigation?
+3. MARKET: Which crop has best price realisation in ${farm.district}, ${farm.state} right now?
+4. WEATHER: Current temp ${weather ? weather.temp + '°C' : 'seasonal'} — which crop thrives in this?
+
+Pick the ONE crop that scores best across all four. Be specific — name the exact variety recommended for ${farm.district}.
+Do NOT default to Bitter Gourd. Reason through the above criteria and pick the genuinely best crop.
+
+Return ONLY this JSON (no markdown, no backticks, no text outside the JSON):
 {
-  "crop_name": "string",
-  "variety": "string (best variety for ${farm.state})",
-  "season": "${season.name}",
+  "crop_name": "crop name",
+  "variety": "specific variety for ${farm.district}, ${farm.state}",
+  "season": "${season}",
   "year": ${new Date().getFullYear()},
   "sowing_date": "YYYY-MM-DD",
   "harvest_date": "YYYY-MM-DD",
@@ -90,61 +124,80 @@ Respond ONLY with a valid JSON object matching this exact structure (no markdown
   "area_acres": ${farm.area_acres},
   "expected_yield_kg": number,
   "market_demand": "high|medium|low",
-  "rationale": "2-3 sentence explanation of why this crop was chosen",
-  "risks": ["risk1", "risk2", "risk3"],
+  "rationale": "3-4 sentences explaining why THIS crop and variety for THIS farm. Reference the soil, irrigation, market, and weather in your reasoning.",
+  "risks": ["risk specific to ${farm.state}", "risk 2", "risk 3"],
   "timeline": [
-    { "label": "string", "date": "YYYY-MM-DD", "description": "string" }
+    { "label": "Land Preparation", "date": "YYYY-MM-DD", "description": "tillage details" },
+    { "label": "Sowing", "date": "YYYY-MM-DD", "description": "seed rate, spacing, depth" },
+    { "label": "First Irrigation", "date": "YYYY-MM-DD", "description": "amount and method" },
+    { "label": "Basal Fertilizer", "date": "YYYY-MM-DD", "description": "NPK dose, application method" },
+    { "label": "Pest Monitoring", "date": "YYYY-MM-DD", "description": "specific pests for this crop in ${farm.state}" },
+    { "label": "Top Dressing", "date": "YYYY-MM-DD", "description": "urea/potash dose" },
+    { "label": "Pre-Harvest Check", "date": "YYYY-MM-DD", "description": "maturity indicators" },
+    { "label": "Harvest", "date": "YYYY-MM-DD", "description": "method, expected yield, storage" }
   ],
   "input_recommendations": [
-    { "item": "string", "quantity": "string", "timing": "string" }
+    { "item": "seed", "quantity": "kg/acre", "timing": "sowing" },
+    { "item": "fertilizer", "quantity": "kg/acre", "timing": "basal" },
+    { "item": "pesticide/herbicide", "quantity": "ml/acre", "timing": "as needed" }
   ],
-  "weather_alerts": ["alert1 if any"]
+  "weather_alerts": []
 }`;
 }
 
 export async function generateAICropPlan(farmId: string): Promise<AICropPlan> {
-  // 1. Fetch farm data
+  // Fetch farm
   const { rows } = await query(
-    `SELECT name, state, district, area_acres, soil_type, irrigation, latitude, longitude
+    `SELECT id, name, state, district, area_acres, soil_type, irrigation, latitude, longitude
      FROM farms WHERE id = $1`,
     [farmId]
   );
   if (!rows[0]) throw new Error('Farm not found');
   const farm: FarmContext = rows[0];
 
-  // 2. Fetch weather if coordinates available
+  // Previous crops for rotation
+  const [{ rows: planRows }, { rows: prodRows }] = await Promise.all([
+    query(`SELECT crop_name FROM crop_plans WHERE farm_id=$1 GROUP BY crop_name ORDER BY MAX(created_at) DESC LIMIT 4`, [farmId]),
+    query(`SELECT crop_name FROM production_records WHERE farm_id=$1 GROUP BY crop_name ORDER BY MAX(created_at) DESC LIMIT 3`, [farmId]),
+  ]);
+  const previousCrops = [...new Set([
+    ...planRows.map((r: any) => r.crop_name),
+    ...prodRows.map((r: any) => r.crop_name),
+  ])];
+
+  // Active plans on this farm
+  const { rows: activeRows } = await query(
+    `SELECT crop_name FROM crop_plans WHERE farm_id=$1 AND status='active'`, [farmId]
+  );
+  const existingPlanCrops = activeRows.map((r: any) => r.crop_name);
+
+  // Weather
   let weather: WeatherData | null = null;
   if (farm.latitude && farm.longitude) {
-    try { weather = await getWeatherByCoords(farm.latitude, farm.longitude); }
-    catch { /* non-fatal */ }
+    try { weather = await getWeatherByCoords(farm.latitude, farm.longitude); } catch {}
   }
 
-  // 3. Build prompt and call Groq
-  const prompt = buildPrompt(farm, weather);
+  const prompt = buildPrompt(farm, weather, previousCrops, existingPlanCrops);
 
   const completion = await groq.chat.completions.create({
     model:       'llama-3.3-70b-versatile',
-    temperature: 0.3,   // low temp for consistent structured output
+    temperature: 0.8,   // high enough for variety, low enough for coherence
     max_tokens:  2048,
     messages: [
       {
         role:    'system',
-        content: 'You are an expert Indian agricultural advisor. Always respond with valid JSON only. No markdown, no backticks, no explanation outside the JSON.',
+        content: 'You are an expert Indian agricultural advisor. Output valid JSON only. No markdown. No backticks. No text outside the JSON.',
       },
-      {
-        role:    'user',
-        content: prompt,
-      },
+      { role: 'user', content: prompt },
     ],
   });
 
-  const raw = completion.choices[0]?.message?.content || '';
-
-  // 4. Parse — strip any accidental markdown fences
+  const raw     = completion.choices[0]?.message?.content || '';
   const cleaned = raw.replace(/```json|```/g, '').trim();
-  const plan: AICropPlan = JSON.parse(cleaned);
+  const match   = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Groq returned no valid JSON');
 
-  // 5. Validate required fields
+  const plan: AICropPlan = JSON.parse(match[0]);
   if (!plan.crop_name || !plan.sowing_date || !plan.harvest_date) {
     throw new Error('Groq returned incomplete plan');
   }

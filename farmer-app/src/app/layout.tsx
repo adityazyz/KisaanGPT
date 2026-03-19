@@ -5,8 +5,8 @@ import AgriChat from '@/components/AgriChat';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'AgriConnect — Farmer Portal',
-  description: 'Plan, grow, and sell your harvest with AgriConnect',
+  title: 'KisaanGPT : Farmer Portal',
+  description: 'Plan, grow, and sell your harvest with KisaanGPT',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
