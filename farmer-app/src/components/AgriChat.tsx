@@ -152,11 +152,22 @@ export default function AgriChat() {
     window.speechSynthesis?.cancel();
     try {
       const token = await getToken();
-      const form  = new FormData();
-      form.append('file', audioBlob, 'audio.webm');
+
+      // Determine file extension from blob mime type
+      const mime = audioBlob.type || 'audio/webm';
+      const ext  = mime.includes('mp4') ? 'mp4'
+                 : mime.includes('ogg') ? 'ogg'
+                 : 'webm';
+
+      const form = new FormData();
+      // File with correct extension — Whisper uses this to pick the right decoder
+      form.append('file', audioBlob, `audio.${ext}`);
+      // lang as plain string — critical for backend field parsing
       form.append('lang', lang);
-      // Send current conversation so the LLM has context
+      // Full conversation history for LLM context
       form.append('conversation', JSON.stringify(conversation));
+
+      console.log('[voice] sending', { lang, mime, ext, size: audioBlob.size });
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat/voice`, {
         method:  'POST',

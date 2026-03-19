@@ -335,9 +335,21 @@ export async function chatRoutes(app: FastifyInstance) {
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: 'No audio file' });
 
-    const lang        = ((data.fields as any)?.lang?.value || 'en') as 'en' | 'hi';
-    const convRaw     = (data.fields as any)?.conversation?.value || '[]';
-    const userId      = req.auth!.userId;
+    // Fastify multipart fields can be { value } objects or plain strings depending on version
+    const getField = (name: string): string => {
+      const f = (data.fields as any)?.[name];
+      if (!f) return '';
+      if (typeof f === 'string') return f;
+      if (Array.isArray(f)) return (f[0]?.value ?? f[0]) || '';
+      return f.value ?? '';
+    };
+
+    const lang    = (getField('lang') || 'en') as 'en' | 'hi';
+    const convRaw = getField('conversation') || '[]';
+    const userId  = req.auth!.userId;
+
+    // Log for debugging
+    req.log.info({ lang, convRawLen: convRaw.length }, '[voice] received');
 
     // Parse existing conversation
     let prevConv: Groq.Chat.ChatCompletionMessageParam[] = [];
@@ -355,13 +367,28 @@ export async function chatRoutes(app: FastifyInstance) {
     // ── Step 1: Whisper transcription with language locked ──────────────────
     let transcript = '';
     try {
+      // Determine correct file extension from mime type
+      const mime     = data.mimetype || 'audio/webm';
+      const ext      = mime.includes('mp4') ? 'mp4'
+                     : mime.includes('ogg') ? 'ogg'
+                     : mime.includes('wav') ? 'wav'
+                     : 'webm';
+      const filename = `audio.${ext}`;
+
       const whisperForm = new FormData();
-      const audioBlob   = new Blob([audioBuffer], { type: data.mimetype || 'audio/webm' });
-      whisperForm.append('file', audioBlob, 'audio.webm');
+      const audioBlob   = new Blob([audioBuffer], { type: mime });
+      whisperForm.append('file', audioBlob, filename);
       whisperForm.append('model', 'whisper-large-v3-turbo');
-      whisperForm.append('response_format', 'json');
-      // Lock language — this is the key fix. Without this Whisper guesses wrong.
+      whisperForm.append('response_format', 'verbose_json'); // gives us detected language too
+      // Hard-lock language — critical for Hindi accuracy
       whisperForm.append('language', lang === 'hi' ? 'hi' : 'en');
+      // Prompt hint dramatically improves Whisper accuracy for Indian languages
+      whisperForm.append(
+        'prompt',
+        lang === 'hi'
+          ? 'यह एक भारतीय किसान की हिंदी में बातचीत है। खेती, फसल, मिट्टी, सिंचाई जैसे शब्द आ सकते हैं।'
+          : 'This is an Indian farmer speaking in English about farming, crops, soil, irrigation.'
+      );
 
       const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
         method:  'POST',
@@ -374,7 +401,8 @@ export async function chatRoutes(app: FastifyInstance) {
         throw new Error(e.error?.message || 'Whisper failed');
       }
 
-      const whisperResult = await whisperRes.json() as { text?: string };
+      const whisperResult = await whisperRes.json() as { text?: string; language?: string };
+      req.log.info({ detectedLang: whisperResult.language, transcript: whisperResult.text?.slice(0, 80) }, '[voice] whisper result');
       transcript = (whisperResult.text || '').trim();
     } catch (err: any) {
       console.error('[voice/whisper]', err.message);
