@@ -68,7 +68,7 @@ export default function SupplierDashboardPage() {
           </div>
         </div>
 
-        <div className="card">
+        {/* <div className="card">
           <h2 className="font-display font-semibold text-lg text-stone-900 mb-4">How It Works</h2>
           <ol className="space-y-3 text-sm text-stone-600">
             {[
@@ -83,7 +83,7 @@ export default function SupplierDashboardPage() {
               </li>
             ))}
           </ol>
-        </div>
+        </div> */}
       </div>
     </div>
   );

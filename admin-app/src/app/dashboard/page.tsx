@@ -61,9 +61,9 @@ export default function AdminDashboardPage() {
               ✓ {aggResult.lotsCreated} lots created, {aggResult.lotsUpdated} updated
             </span>
           )}
-          <button onClick={handleAggregate} disabled={aggregating} className="btn-primary">
+          {/* <button onClick={handleAggregate} disabled={aggregating} className="btn-primary">
             {aggregating ? '⏳ Aggregating…' : '⚙️ Run Aggregation'}
-          </button>
+          </button> */}
         </div>
       </div>
 

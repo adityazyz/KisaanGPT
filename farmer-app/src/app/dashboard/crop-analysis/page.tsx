@@ -137,7 +137,7 @@ function OverlayResult({
     const gc = GRADE_CONFIG[r.grade] || GRADE_CONFIG.B;
     themeColor = gc.color; themeGlow = gc.glow;
     headline   = `${r.grade_label}`;
-    subline    = `₹${r.price_range?.min_inr_per_kg}–₹${r.price_range?.max_inr_per_kg}/kg`;
+    subline    = `₹${r.price_range?.min_inr_per_kg/100}–₹${r.price_range?.max_inr_per_kg/100}/kg`;
   }
 
   return (
@@ -512,12 +512,12 @@ function DashboardReport({
               <p className="text-xs font-semibold text-[#7a6652] uppercase tracking-wide mb-3">{reportLang === 'hi' ? 'बाजार मूल्य अनुमान' : 'Market Price Estimate'}</p>
               <div className="flex items-center gap-4 mb-3">
                 <div className="text-center">
-                  <div className="text-3xl font-black text-leaf-700">₹{r.price_range?.min_inr_per_kg}</div>
+                  <div className="text-3xl font-black text-leaf-700">₹{r.price_range?.min_inr_per_kg/100}</div>
                   <div className="text-xs text-[#7a6652]">{reportLang === 'hi' ? 'न्यूनतम/किग्रा' : 'Min/kg'}</div>
                 </div>
                 <div className="text-2xl text-[#7a6652]">—</div>
                 <div className="text-center">
-                  <div className="text-3xl font-black text-leaf-700">₹{r.price_range?.max_inr_per_kg}</div>
+                  <div className="text-3xl font-black text-leaf-700">₹{r.price_range?.max_inr_per_kg/100}</div>
                   <div className="text-xs text-[#7a6652]">{reportLang === 'hi' ? 'अधिकतम/किग्रा' : 'Max/kg'}</div>
                 </div>
                 <div className="ml-2">

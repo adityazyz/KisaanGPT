@@ -1,8 +1,8 @@
 'use client';
 import { useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { UserButton } from '@clerk/nextjs';
+import { usePathname, useRouter } from 'next/navigation';
+import { UserButton, useClerk } from '@clerk/nextjs';
 import { clsx } from 'clsx';
 
 const NAV = [
@@ -10,12 +10,19 @@ const NAV = [
   { href: '/dashboard/supply', label: 'Browse Supply', icon: '🌾' },
   { href: '/dashboard/demands', label: 'My Demands', icon: '📝' },
   { href: '/dashboard/matches', label: 'Matches', icon: '🤝' },
-  { href: '/dashboard/notifications', label: 'Notifications', icon: '🔔' },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const { signOut } = useClerk();
+  const router = useRouter();
+
+  const handleSignOut = async () => {
+    await signOut();
+    router.push('/');
+  };
+
   return (
     <div className="flex min-h-screen bg-slate-50">
       <aside className={clsx('fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col transition-transform lg:translate-x-0 lg:static', open ? 'translate-x-0' : '-translate-x-full')}>
@@ -35,8 +42,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Link>
           ))}
         </nav>
-        <div className="px-6 py-4 border-t border-slate-200 flex items-center gap-3">
-          <UserButton afterSignOutUrl="/" /><span className="text-sm text-slate-500">My Account</span>
+        <div className="px-6 py-4 border-t border-slate-200 space-y-2">
+          <div className="flex items-center gap-3">
+            <UserButton />
+            <span className="text-sm text-slate-500">My Account</span>
+          </div>
+          <button
+            onClick={handleSignOut}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+          >
+            <span>🚪</span> Sign out
+          </button>
         </div>
       </aside>
       {open && <div className="fixed inset-0 z-30 bg-black/20 lg:hidden" onClick={() => setOpen(false)} />}
